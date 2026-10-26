@@ -5,11 +5,9 @@ TARGETTYPE=DRIVER
 TARGETPATH=obj
 
 TARGETLIBS= \
-        $(SDK_LIB_PATH)\portcls.lib\
-        $(SDK_LIB_PATH)\libcntpr.lib\
-        ..\..\lib\*\stdunk.lib
-
-INCLUDES=..\..\inc
+        $(DDK_LIB_PATH)\portcls.lib \
+        $(DDK_LIB_PATH)\libcntpr.lib \
+        $(DDK_LIB_PATH)\stdunk.lib
 
 MSC_WARNING_LEVEL=-W3 -WX
 
@@ -19,7 +17,8 @@ LINKER_FLAGS=-map
 SOURCES=\
         adapter.cpp     \
         common.cpp      \
-		codec.cpp       \
+        codec.cpp       \
+        codec_adi.cpp   \
         mintopo.cpp     \
         minwave.cpp     \
         registry.cpp    \

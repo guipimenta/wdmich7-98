@@ -124,6 +124,10 @@ SOURCE=.\codec.cpp
 # End Source File
 # Begin Source File
 
+SOURCE=.\codec_adi.cpp
+# End Source File
+# Begin Source File
+
 SOURCE=.\common.cpp
 # End Source File
 # Begin Source File
@@ -149,6 +153,14 @@ SOURCE=.\registry.cpp
 # Begin Source File
 
 SOURCE=.\codec.h
+# End Source File
+# Begin Source File
+
+SOURCE=.\codec_adi.h
+# End Source File
+# Begin Source File
+
+SOURCE=.\cpu.h
 # End Source File
 # Begin Source File
 

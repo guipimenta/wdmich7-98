@@ -234,6 +234,7 @@ private:
 	LONG JackPollWorkQueued;
 	KEVENT JackPollWorkerIdleEvent;
 	BOOLEAN JackPollTimerStarted;
+	BOOLEAN StreamStateDumped;			// codec snapshot taken at first stream
 
     HDA_INTERRUPT_TYPE AcknowledgeIRQ
     (   void
@@ -257,6 +258,7 @@ private:
 	STDMETHODIMP_(NTSTATUS) WriteConfigSpaceWord(UCHAR offset, USHORT andWord, USHORT orWord);
 
 	//Registry manipulation
+	STDMETHODIMP_(void) WriteCodecStateToRegistry(IN PCWSTR ValueName);
 	STDMETHODIMP_(NTSTATUS) WriteHardwareIdsToRegistry(
 		IN HDA_Codec* Codec
 	);
@@ -517,6 +519,7 @@ Init
 	JackPollingStopping = 0;
 	JackPollWorkQueued = 0;
 	JackPollTimerStarted = FALSE;
+	StreamStateDumped = FALSE;
 
 	//Make sure cache line size set in FDO device object matches HDA requirement
     DOUT(DBG_SYSINFO, ("Initial FDO align was %d", 
@@ -550,15 +553,7 @@ Init
 	Registry::DetectOsVersion();
 
 	// Check for SSE2 / CLFLUSH support
-	ULONG edx_feat;
-		__asm {
-			pushad
-			mov eax, 1
-			cpuid
-			mov edx_feat, edx
-			popad
-    }	
-	g_bHasClFlush = (edx_feat & (1 << 19)) != 0;
+	g_bHasClFlush = (HdaCpuidFeaturesEdx() & HDA_CPUID_EDX_CLFSH) != 0;
 	
 	if (! g_bHasClFlush){
 		DbgPrint("SSE2 instructions not detected, cache flushes will not work!\n");
@@ -1104,6 +1099,7 @@ CAdapterCommon::
 	//put all codecs in shutdown
 	for (i = 0; i < codecCount; i++) {
 		if(pCodecs[i] != NULL){
+			pCodecs[i]->RestoreVendorDefaults();
 			pCodecs[i]->shutdown(TRUE);
 		}
 	}
@@ -1776,6 +1772,9 @@ CAdapterCommon::TryInitializeCodecSlot(
 				return STATUS_UNSUCCESSFUL;
 			} else {
 				NTSTATUS registryStatus = WriteHardwareIdsToRegistry(pCodec);
+				if (NT_SUCCESS(registryStatus)) {
+					WriteCodecStateToRegistry(L"StateInit");
+				}
 				if (!NT_SUCCESS(registryStatus)) {
 					DOUT(DBG_ERROR, (
 						"Unable to save HDA hardware IDs to the device registry key: 0x%08X",
@@ -1870,6 +1869,54 @@ Exit: //cleanup
 	return Status;
 }
 
+
+/*****************************************************************************
+ * CAdapterCommon::WriteCodecStateToRegistry
+ *
+ * Stores HDA_Codec::DumpState() of every codec as a binary value next to the
+ * IDs written by WriteHardwareIdsToRegistry. One fixed-size value per name,
+ * overwritten each time, so the registry does not grow.
+ *****************************************************************************/
+STDMETHODIMP_(void)
+CAdapterCommon::WriteCodecStateToRegistry(
+	IN PCWSTR ValueName
+)
+{
+	PAGED_CODE();
+
+	const ULONG MaxDwords = 16 + MAX_OUTPUT_PATHS * 4 + 64 * 14;
+	PULONG Buffer = (PULONG)ExAllocatePoolWithTag(PagedPool, MaxDwords * sizeof(ULONG), 'DadH');
+	if (Buffer == NULL) return;
+
+	for (UCHAR i = 0; i < codecCount; i++) {
+		PREGISTRYKEY DeviceKey = NULL, CodecsKey = NULL, AddressKey = NULL, CodecKey = NULL;
+		ULONG Disposition, Length;
+		WCHAR Name[9];
+		UNICODE_STRING Value;
+
+		if (pCodecs[i] == NULL) continue;
+		Length = pCodecs[i]->DumpState(Buffer, MaxDwords);
+		if (Length == 0) continue;
+
+		if (!NT_SUCCESS(Registry::OpenDeviceKey(&DeviceKey, m_pDeviceObject, TRUE, KEY_ALL_ACCESS))) goto Next;
+		if (!NT_SUCCESS(Registry::OpenSubKey(DeviceKey, L"Codecs", KEY_ALL_ACCESS, &CodecsKey, &Disposition))) goto Next;
+		_snwprintf(Name, ARRAY_COUNT(Name), L"%02X", pCodecs[i]->GetCodecAddress());
+		Name[ARRAY_COUNT(Name) - 1] = L'\0';
+		if (!NT_SUCCESS(Registry::OpenSubKey(CodecsKey, Name, KEY_ALL_ACCESS, &AddressKey, &Disposition))) goto Next;
+		_snwprintf(Name, ARRAY_COUNT(Name), L"%08X", pCodecs[i]->GetCodecId());
+		Name[ARRAY_COUNT(Name) - 1] = L'\0';
+		if (!NT_SUCCESS(Registry::OpenSubKey(AddressKey, Name, KEY_ALL_ACCESS, &CodecKey, &Disposition))) goto Next;
+
+		RtlInitUnicodeString(&Value, ValueName);
+		CodecKey->SetValueKey(&Value, REG_BINARY, Buffer, Length * sizeof(ULONG));
+Next:
+		if (CodecKey) CodecKey->Release();
+		if (AddressKey) AddressKey->Release();
+		if (CodecsKey) CodecsKey->Release();
+		if (DeviceKey) DeviceKey->Release();
+	}
+	ExFreePool(Buffer);
+}
 
 //***End of pageable code!********************************************************
 //everything above this must have PAGED_CODE ();
@@ -2864,10 +2911,7 @@ STDMETHODIMP_(NTSTATUS) CAdapterCommon::hda_setup_stream_descriptor(
 
 	// Memory Fence: Ensures all flushes are globally visible 
 	// before the ISR/DPC returns
-	__asm { _emit 0x0F // MFENCE
-		    _emit 0xAE
-		    _emit 0xF0
-	}
+	HdaMfence();
 
 	// wait for Play state to actually start the stream though.
 	
@@ -3189,20 +3233,11 @@ STDMETHODIMP_(void) CAdapterCommon::CacheLineFlush(PVOID Destination, ULONG Byte
 		ULONG_PTR start = (ULONG_PTR)Destination & ~((ULONG_PTR)63);
 		ULONG_PTR end = ((ULONG_PTR)Destination + ByteCount + 63) & ~((ULONG_PTR)63);
 	    for (ULONG_PTR p = start; p < end; p += 64) {
-		    __asm {
-			    mov eax, p
-                _emit 0x0F // CLFLUSH [eax]
-	            _emit 0xAE
-		        _emit 0x38
-			}
+		    HdaClflush(p);
 		}
 		// Memory Fence: Ensures all flushes are globally visible 
 		// before the ISR/DPC returns
-		__asm {
-		    _emit 0x0F // MFENCE
-		    _emit 0xAE
-		    _emit 0xF0
-		}
+		HdaMfence();
 	}
 }
 
@@ -3262,6 +3297,11 @@ STDMETHODIMP_(NTSTATUS) CAdapterCommon::StartJackPolling()
 	ExInitializeWorkItem(&JackPollWorkItem, JackPollWorker, (PVOID) this);
 
 	hda_check_headphone_connection_change();
+
+	if (!StreamStateDumped) {
+		StreamStateDumped = TRUE;
+		WriteCodecStateToRegistry(L"StateStream");
+	}
 
     LARGE_INTEGER due;
     due.QuadPart = -2500000;

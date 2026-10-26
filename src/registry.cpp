@@ -24,6 +24,10 @@ namespace Registry {
 	BOOLEAN allowHighDepth;
 	BOOLEAN allowBlindProbe;
 	BOOLEAN isWin2kOrLater;
+	ULONG initVerbs[REG_MAX_VERBS];
+	ULONG numInitVerbs;
+	ULONG remVerbs[REG_MAX_VERBS];
+	ULONG numRemVerbs;
 
 	static REG_BOOL_SETTING g_BooleanSettings[] =
 	{
@@ -109,6 +113,50 @@ VOID Registry::ReadSettings (IN PDEVICE_OBJECT DeviceObject){
             ReadBoolean(DeviceObject, g_BooleanSettings[i].ValueName, 
 			g_BooleanSettings[i].DefaultValue);
     }
+	ReadVerbList(DeviceObject, L"InitVerbs", initVerbs, &numInitVerbs);
+	ReadVerbList(DeviceObject, L"RemVerbs", remVerbs, &numRemVerbs);
+}
+
+// Reads <driver key>\KeyName\NumVerbs and the values "0000".."NNNN" (decimal
+// names, as written by the SoundMAX INF). Zero entries are skipped like the
+// XP driver does. Count is 0 if the key is missing.
+VOID
+Registry::ReadVerbList(
+	IN PDEVICE_OBJECT DeviceObject,
+	IN PCWSTR KeyName,
+	OUT PULONG Verbs,
+	OUT PULONG Count
+)
+{
+	PAGED_CODE();
+
+	PREGISTRYKEY DriverKey = NULL;
+	PREGISTRYKEY ListKey = NULL;
+	ULONG NumVerbs = 0;
+	ULONG i, Verb;
+	WCHAR Name[5];
+
+	*Count = 0;
+
+	if (!NT_SUCCESS(OpenDeviceKey(&DriverKey, DeviceObject, FALSE, KEY_READ))) goto Exit;
+	if (!NT_SUCCESS(OpenSubKey(DriverKey, KeyName, KEY_READ, &ListKey, NULL))) goto Exit;
+	if (!NT_SUCCESS(ReadDword(ListKey, L"NumVerbs", &NumVerbs))) goto Exit;
+
+	if (NumVerbs > REG_MAX_VERBS) NumVerbs = REG_MAX_VERBS;
+	for (i = 0; i < NumVerbs; ++i) {
+		Name[0] = (WCHAR)(L'0' + (i / 1000) % 10);
+		Name[1] = (WCHAR)(L'0' + (i / 100) % 10);
+		Name[2] = (WCHAR)(L'0' + (i / 10) % 10);
+		Name[3] = (WCHAR)(L'0' + i % 10);
+		Name[4] = 0;
+		if (NT_SUCCESS(ReadDword(ListKey, Name, &Verb)) && Verb != 0) {
+			Verbs[(*Count)++] = Verb;
+		}
+	}
+
+Exit:
+	if (ListKey) ListKey->Release();
+	if (DriverKey) DriverKey->Release();
 }
 
 NTSTATUS

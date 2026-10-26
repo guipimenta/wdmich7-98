@@ -27,6 +27,15 @@ namespace Registry {
 	// OS version detection (cached at driver load)
 	extern BOOLEAN isWin2kOrLater;
 
+	// Codec command lists from the driver key, same layout as the SoundMAX
+	// XP INF: <Key>\NumVerbs plus DWORD values "0000", "0001", ...
+	// When present they replace the built-in codec model lists.
+	#define REG_MAX_VERBS 64
+	extern ULONG initVerbs[REG_MAX_VERBS];
+	extern ULONG numInitVerbs;
+	extern ULONG remVerbs[REG_MAX_VERBS];
+	extern ULONG numRemVerbs;
+
     NTSTATUS OpenDeviceKey(
 		OUT PREGISTRYKEY* RegistryKey, 
 		IN PDEVICE_OBJECT m_pDeviceObject, 
@@ -67,6 +76,12 @@ namespace Registry {
 		IN ULONG Value
 		);
 	VOID     DetectOsVersion();
+	VOID     ReadVerbList(
+		IN PDEVICE_OBJECT DeviceObject,
+		IN PCWSTR KeyName,
+		OUT PULONG Verbs,
+		OUT PULONG Count
+		);
 }
 
 #endif

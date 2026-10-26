@@ -42,6 +42,7 @@
  * Forward declarations
  */
 struct IAdapterCommon;
+struct _ADI_MODEL;
 
 /*****************************************************************************
  * Typedefs
@@ -244,6 +245,14 @@ private:
 	LONG HpPollingEnabled;
     LONG InShutdown;
 
+	const struct _ADI_MODEL* adi_model;	// SoundMAX model settings, if any
+	ULONG afg_node;						// audio function group in use
+
+    void SendVerbList(const ULONG* verbs, ULONG count, const char* tag);
+    ULONG FindDacConnection(ULONG node, ULONG depth);
+    BOOLEAN FindDacConnectionExists(ULONG node, ULONG depth);
+    void UnmuteInAmp0dB(ULONG nid, UCHAR index);
+
     void ForcePinOut(ULONG pinNid, BOOLEAN enable);
     void ForceEapd(ULONG pinNid, BOOLEAN enable);
 
@@ -308,6 +317,8 @@ public:
 	IN  BOOLEAN         Input);
 
 	STDMETHODIMP_(void) shutdown(BOOLEAN down);
+	STDMETHODIMP_(void) RestoreVendorDefaults(void);
+	STDMETHODIMP_(ULONG) DumpState(PULONG buf, ULONG maxDwords);
     
     // Accessors
     UCHAR GetCodecAddress() const { return codec_address; }

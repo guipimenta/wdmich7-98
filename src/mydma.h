@@ -23,15 +23,7 @@ public:
         m_RefCount = 1;
 
 		// Check for SSE2 / CLFLUSH support
-		ULONG edx_feat;
-		__asm {
-			pushad
-			mov eax, 1
-			cpuid
-			mov edx_feat, edx
-			popad
-        }	
-		g_bHasClFlush = (edx_feat & (1 << 19)) != 0;
+		g_bHasClFlush = (HdaCpuidFeaturesEdx() & HDA_CPUID_EDX_CLFSH) != 0;
 		m_UseAlignedView = FALSE;
 		m_MaxBufferSize = 0;
 		m_RequestedBufferSize = 0;
@@ -138,21 +130,12 @@ public:
 			ULONG_PTR start = (ULONG_PTR)Destination & ~((ULONG_PTR)63);
 			ULONG_PTR end = ((ULONG_PTR)Destination + ByteCount + 63) & ~((ULONG_PTR)63);
 		    for (ULONG_PTR p = start; p < end; p += 64) {
-			    __asm {
-				    mov eax, p
-	                _emit 0x0F // CLFLUSH [eax]
-		            _emit 0xAE
-			        _emit 0x38
-				}
+			    HdaClflush(p);
 			}
 
 			// 3. Memory Fence: Ensures all flushes are globally visible 
 			// before the ISR/DPC returns and the HDA controller starts reading.
-			__asm {
-			    _emit 0x0F // MFENCE
-			    _emit 0xAE
-			    _emit 0xF0
-			}
+			HdaMfence();
 		}
 	}
 

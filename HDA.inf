@@ -11,7 +11,7 @@ Signature="$CHICAGO$"
 Class=MEDIA
 ClassGUID={4d36e96c-e325-11ce-bfc1-08002be10318}
 provider=%MFG%
-DriverVer=10/18/2026,5.00.2195.25
+DriverVer=10/27/2026,5.00.2195.26
 
 [SourceDisksNames]
 222=%DiskDescription%,,,
@@ -31,6 +31,11 @@ ExcludeFromSelect = *EXCLUDE
 
 ;; HDA miniport
 [SiriusCybernetics]
+;Intel ICH7/ICH8/ICH9 HD Audio controllers used with SoundMAX codecs.
+;Hardware ID only, so just the line for the installed chipset is offered.
+%SoundMAX.ICH7.DeviceDesc%=WDM_HDA,       PCI\VEN_8086&DEV_27D8
+%SoundMAX.ICH8.DeviceDesc%=WDM_HDA,       PCI\VEN_8086&DEV_284B
+%SoundMAX.ICH9.DeviceDesc%=WDM_HDA,       PCI\VEN_8086&DEV_293E
 ;Generic PCI class. use at your own risk
 %*WDM_HDA.DeviceDesc%=WDM_HDA,            , PCI\CC_0403
 %*CTL0051.DeviceDesc%=STUB_DEVICE,          , *CTL0051
@@ -121,6 +126,13 @@ HKR,Settings,AllowHighDepth,0x00010001,0
 ; Allow blind probe of all 16 codec slots if STATESTS is 0 (off by default to prevent hangs)
 HKR,Settings,AllowBlindProbe,0x00010001,0
 
+; SoundMAX (Analog Devices) ThinkPad codecs get the init verbs of the XP
+; SoundMAX driver built in (see ADI_NOTES.md). To replace them, add a list in
+; the XP INF format; the values are named in decimal and zero entries skipped:
+;HKR,InitVerbs,NumVerbs,0x00010001,2
+;HKR,InitVerbs,0000,0x00010001,0x0113B017
+;HKR,InitVerbs,0001,0x00010001,0x0123B017
+
 [DestinationDirs]
 HDA.CopyList      = 10,system32\drivers ; %SystemRoot%\system32\drivers
 
@@ -165,7 +177,10 @@ ServiceBinary  = %10%\system32\drivers\HDA.sys
 MFG="DrewHoffman"
 MfgName="Sirius Cybernetics"
 DiskDescription="HD Audio WDM Driver Package"
-*WDM_HDA.DeviceDesc="HD Audio Controller (WDM)"
+*WDM_HDA.DeviceDesc="HD Audio Controller (WDM, generic)"
+SoundMAX.ICH7.DeviceDesc="SoundMAX HD Audio (WDM) on Intel ICH7"
+SoundMAX.ICH8.DeviceDesc="SoundMAX HD Audio (WDM) on Intel ICH8"
+SoundMAX.ICH9.DeviceDesc="SoundMAX HD Audio (WDM) on Intel ICH9"
 *CTL0051.DeviceDesc = "WDM Sample Driver for 3D Stereo Enhancement Technology (inactive)"
 *CTL7FFF.DeviceDesc = "WDM Sample Driver for Plug and Play Device (Reserved) (inactive)"
 SBAWE_Virtual_Mpu.DeviceDesc="WDM Sample Driver for MPU401 Emulation (inactive)"

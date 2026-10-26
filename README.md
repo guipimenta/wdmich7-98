@@ -1,3 +1,70 @@
+# SoundMAX HD Audio for Windows 98 SE (wdmich7-98)
+
+Windows 98 SE driver for the Analog Devices SoundMAX HD Audio found in Lenovo
+ThinkPads with Intel ICH7/ICH8/ICH9 chipsets (T60, T61 and related models).
+It is a fork of [WDMHDA](https://github.com/andrew-hoffman/WDMHDA) by Drew
+Hoffman, extended with codec settings recovered from Analog Devices' own
+SoundMAX driver for Windows XP. Confirmed working on a ThinkPad: clean
+playback through the internal speaker.
+
+## What this fork adds
+- **SoundMAX model table** (`src/codec_adi.cpp`): the per-model init verbs
+  that the XP SoundMAX INF applies, matched by codec and codec subsystem ID:
+
+  | Codec | Lenovo subsystems | XP INF model |
+  |---|---|---|
+  | AD1981HD | 17AA:2008, 2025, 2060, 2080 | HDA_TP / HDA_TPS |
+  | AD1984 | 17AA:20BB, 20D6, 20D7, 20DD | HDA_TP4 |
+  | AD1984A | 17AA:20BB, 20D6, 20D7, 20DD | HDA_TP4 |
+  | AD1984A | 17AA:20FB | HDA_TP4A |
+
+  They are sent in the same order as the XP driver: right after the audio
+  function group is reset, before the widgets are parsed. Restore verbs go out
+  at unload. AD1984A 20FB also gets the XP 44.1/48 kHz converter limit and
+  keeps EAPD (the speaker amplifier enable) asserted on pin 0x12.
+- **Speaker path fix:** the path walk from an output pin now follows the
+  connection that actually reaches a DAC instead of always the first one. On
+  Analog Devices codecs it also unmutes that mixer input at 0 dB. This is what
+  made the internal speaker play.
+- **Headphone handling as in XP:** the speaker is only switched off for
+  headphones where the XP driver does it (AD1984A 20FB).
+- **Registry override:** `HKR,InitVerbs` / `HKR,RemVerbs` in the XP INF format
+  replace the built-in lists, so XP INF lines can be pasted unchanged.
+- **Diagnostics:** the driver stores a fixed-size codec snapshot (`StateInit`,
+  `StateStream`) under the device's `Codecs` registry key. `tools/EXPORT.BAT`
+  exports it and `tools/decode_state.py` decodes it.
+- The MSVC-only inline assembly moved to `src/cpu.h`.
+
+How each setting was found in the XP binary is documented in
+[ADI_NOTES.md](ADI_NOTES.md), with addresses. The scripts used are in
+`tools/re/`. The Analog Devices driver itself is not included.
+
+## Install (Windows 98 SE)
+1. Download the release zip and unpack it.
+2. Device Manager > Other devices > "PCI Card" (or the current sound device)
+   > Properties > Driver > Update Driver > "Display a list of all the
+   drivers" > Have Disk, then pick **SoundMAX HD Audio (WDM) on Intel ICHx**.
+   Only the line for your chipset is listed (T60 = ICH7, T61 = ICH8).
+3. If asked about an older ksuser.dll or stream.sys, keep the newer file.
+4. Restart. Check that Volume and Wave are up and not muted.
+
+On these ThinkPads the volume and mute buttons are handled by the laptop's
+firmware. If there is no sound, press mute once and then volume up.
+
+Like upstream, the driver is playback only.
+
+## Building
+Built with the Windows XP DDK (build 2600) in a Windows XP VM:
+copy the tree to e.g. `C:\hda98` and run `build.cmd` (it calls
+`setenv.bat C:\WINDDK\2600 fre` and `build -cZ`). The DDK's prebuilt
+`portcls.lib` and `stdunk.lib` are used, so no DDK samples are needed. The
+result is `src\objfre\i386\HDA.sys`. The VC6 project was updated with the
+new files but has not been built.
+
+---
+
+*Upstream WDMHDA README follows.*
+
 # HD Audio driver for Windows 98SE / ME, 2000 and XP
 
 This is a High Definition Audio aka Azalia codec and controller driver for retro Windows OSes. It supports the motherboard onboard audio for Intel 915 and later chipsets as well as other manufacturers that conform to the HD Audio standard.

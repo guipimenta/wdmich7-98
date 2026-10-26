@@ -38,6 +38,8 @@
 #include "common.h"
 #include "codec.h"
 #include "hdac_vendor.h"
+#include "codec_adi.h"
+#include "registry.h"
 
 #define STR_MODULENAME "HDA_Codec: "
 
@@ -220,7 +222,9 @@ HDA_Codec::HDA_Codec(BOOLEAN spdif, BOOLEAN altOut, UCHAR address, ULONG pci_sid
       afg_node_input_amp_capabilities(0),
       afg_node_output_amp_capabilities(0),
 	  prev_data_format(0),
-	  dock_lineout_node_number(0)
+	  dock_lineout_node_number(0),
+	  adi_model(NULL),
+	  afg_node(0)
 {
 
 }
@@ -305,6 +309,8 @@ STDMETHODIMP_(NTSTATUS) HDA_Codec::hda_initialize_audio_function_group(ULONG afg
 
 	RtlZeroMemory(&path, sizeof(HDA_NODE_PATH));
 
+	afg_node = afg_node_number;
+
 	//reset AFG
 	hda_send_verb(afg_node_number, 0x7FF, 0x00);
 
@@ -320,6 +326,16 @@ STDMETHODIMP_(NTSTATUS) HDA_Codec::hda_initialize_audio_function_group(ULONG afg
 	codec_quirks = hda_lookup_codec_quirks(codec_id, codec_subsystem_id, controller_subsystem_id);
 	DOUT (DBG_SYSINFO, ("Codec subsystem ID: 0x%08x", codec_subsystem_id));
 	DOUT (DBG_SYSINFO, ("Codec quirks: 0x%08x", codec_quirks));
+
+	// Vendor init verbs go out before any widget is read, as the SoundMAX
+	// XP driver does: some of them rewrite pin configuration defaults.
+	adi_model = AdiFindModel(codec_id, codec_subsystem_id);
+	if (Registry::numInitVerbs != 0) {
+		SendVerbList(Registry::initVerbs, Registry::numInitVerbs, "registry InitVerbs");
+	} else if (adi_model != NULL) {
+		hda_log("WDMHDA: SoundMAX model %s\n", adi_model->name);
+		SendVerbList(adi_model->init_verbs, adi_model->num_init_verbs, "InitVerbs");
+	}
 
 	if (codec_id == 0x10EC0292) {
 		// Linux leaves EAPD under standard verb control on all ALC292 codecs.
@@ -665,6 +681,15 @@ STDMETHODIMP_(NTSTATUS) HDA_Codec::hda_initialize_audio_function_group(ULONG afg
 		
 	}
 
+	if (adi_model != NULL && adi_model->dac_pcm_mask != 0) {
+		for (ULONG i = 0; i < out_paths.count; ++i) {
+			out_paths.paths[i].audio_output_node_sample_capabilities &= adi_model->dac_pcm_mask;
+		}
+	}
+	if (adi_model != NULL && adi_model->eapd_pin != 0) {
+		ForceEapd(adi_model->eapd_pin, TRUE);
+	}
+
 	DbgPrint("\n%d Output paths found, Node %X selected\n", out_paths.count, pin_output_node_number);
 	if(out_paths.count == 0) {
 		//no usable output paths have been found
@@ -793,6 +818,8 @@ STDMETHODIMP_(NTSTATUS) HDA_Codec::hda_initialize_output_pin ( ULONG pin_node_nu
 		hda_get_node_connection_entries(pin_node_number, 0) == 0x0c &&
 		hda_get_node_connection_entries(pin_node_number, 1) == 0x0d) {
 		connection_index = 1;
+	} else {
+		connection_index = FindDacConnection(pin_node_number, 0);
 	}
 
 	hda_send_verb(pin_node_number, 0x701, connection_index);
@@ -938,9 +965,17 @@ STDMETHODIMP_(void) HDA_Codec::hda_initialize_audio_mixer(ULONG audio_mixer_node
 		}
 	}
 
-	//continue in path
+	//continue in path through the input that leads to a DAC
 	length_of_node_path++;
-	ULONG first_connected_node_number = hda_get_node_connection_entries(audio_mixer_node_number, 0); //get first node number
+	ULONG mixer_input = FindDacConnection(audio_mixer_node_number, 0);
+
+	// SoundMAX mixers come out of reset with every input amp muted
+	// (the XP driver opens them through its mixer topology).
+	if (codec_ven == ANALOGDEVICES_VENDORID) {
+		UnmuteInAmp0dB(audio_mixer_node_number, (UCHAR)mixer_input);
+	}
+
+	ULONG first_connected_node_number = hda_get_node_connection_entries(audio_mixer_node_number, mixer_input);
 	ULONG type_of_first_connected_node = hda_get_node_type(first_connected_node_number); //get type of first node
 	if(type_of_first_connected_node == HDA_WIDGET_AUDIO_OUTPUT) {
 		hda_initialize_audio_output(first_connected_node_number, path);
@@ -999,10 +1034,11 @@ STDMETHODIMP_(void) HDA_Codec::hda_initialize_audio_selector(ULONG audio_selecto
 		path.mute_amp_node_capabilities = audio_selector_amp_capabilities;
 	}
 	
-	//continue in path
+	//continue in path through the input that leads to a DAC
 	length_of_node_path++;
-	hda_send_verb(audio_selector_node_number, 0x701, 0x00); //select first node
-	ULONG first_connected_node_number = hda_get_node_connection_entries(audio_selector_node_number, 0); //get first node number
+	ULONG selector_input = FindDacConnection(audio_selector_node_number, 0);
+	hda_send_verb(audio_selector_node_number, 0x701, selector_input);
+	ULONG first_connected_node_number = hda_get_node_connection_entries(audio_selector_node_number, selector_input);
 	ULONG type_of_first_connected_node = hda_get_node_type(first_connected_node_number); //get type of first node
 	if(type_of_first_connected_node == HDA_WIDGET_AUDIO_OUTPUT) {
 		hda_initialize_audio_output(first_connected_node_number, path);
@@ -1377,7 +1413,9 @@ STDMETHODIMP_(void) HDA_Codec::hda_check_headphone_connection_change(void) {
 
         hda_enable_pin_output(headphone_node_number, TRUE);
         ForceEapd(headphone_node_number, TRUE);
-        hda_disable_pin(pin_output_node_number);
+        if (adi_model == NULL || adi_model->hp_mutes_speaker) {
+            hda_disable_pin(pin_output_node_number);
+        }
     } 
     else {
         hda_log("HDA_Codec: SwitchOutput -> SPEAKERS\n");
@@ -1700,5 +1738,156 @@ inline STDMETHODIMP_(USHORT) HDA_Codec::hda_return_sound_data_format(ULONG sampl
 STDMETHODIMP_(void) HDA_Codec::shutdown(BOOLEAN down)
 {
 	InShutdown = down;	
+}
+
+// Index of the first connection of 'node' that leads to an audio output
+// converter, directly or through mixers/selectors. 0 if none is found, which
+// keeps the old behaviour of following the first connection.
+ULONG HDA_Codec::FindDacConnection(ULONG node, ULONG depth)
+{
+	if (depth > 4) return 0;
+
+	for (ULONG i = 0; i < 32; ++i) {
+		ULONG next = hda_get_node_connection_entries(node, i);
+		if (next == 0) break;
+
+		UCHAR type = hda_get_node_type(next);
+		if (type == HDA_WIDGET_AUDIO_OUTPUT) return i;
+		if ((type == HDA_WIDGET_AUDIO_MIXER || type == HDA_WIDGET_AUDIO_SELECTOR) &&
+			FindDacConnectionExists(next, depth + 1)) {
+			return i;
+		}
+	}
+	return 0;
+}
+
+BOOLEAN HDA_Codec::FindDacConnectionExists(ULONG node, ULONG depth)
+{
+	if (depth > 4) return FALSE;
+
+	for (ULONG i = 0; i < 32; ++i) {
+		ULONG next = hda_get_node_connection_entries(node, i);
+		if (next == 0) break;
+
+		UCHAR type = hda_get_node_type(next);
+		if (type == HDA_WIDGET_AUDIO_OUTPUT) return TRUE;
+		if ((type == HDA_WIDGET_AUDIO_MIXER || type == HDA_WIDGET_AUDIO_SELECTOR) &&
+			FindDacConnectionExists(next, depth + 1)) {
+			return TRUE;
+		}
+	}
+	return FALSE;
+}
+
+// Unmute input 'index' of a widget at its 0 dB step (both channels).
+void HDA_Codec::UnmuteInAmp0dB(ULONG nid, UCHAR index)
+{
+	if (InShutdown) return;
+
+	ULONG caps = hda_send_verb(nid, VERB_GET_PARAMETER, 0x0D);
+	ULONG wcaps = hda_send_verb(nid, VERB_GET_PARAMETER, AC_PAR_AUDIO_WIDGET_CAP);
+	if ((wcaps & (1UL << 3)) == 0) {
+		caps = afg_node_input_amp_capabilities; // no amp override: AFG default
+	}
+	if ((wcaps & (1UL << 1)) == 0) return; // no input amp
+
+	ULONG payload = 0x7000 | ((ULONG)(index & 0x0F) << 8) | (caps & 0x7F);
+	SendVerbLogged(nid, 0x300, payload, "mixer input unmute");
+}
+
+/*****************************************************************************
+ * HDA_Codec::DumpState()
+ *****************************************************************************
+ * Snapshot of the codec for diagnosis, read back from the registry.
+ * Header (16 dwords): 'HDAD', version, codec ID, subsystem ID, SoundMAX model
+ * matched (1/0), AFG node, first node, node count, output path count,
+ * selected output pin, headphone pin, current output, headphone present,
+ * 3 reserved. Then per output path (4 dwords): pin type, DAC, volume amp
+ * node, mute amp node. Then per widget (14 dwords): nid | type << 8,
+ * widget caps, pin config or converter format, pin control or stream/channel,
+ * EAPD, pin sense, out amp L, out amp R, in amp 0 L, in amp 0 R,
+ * connection select, connection list entries 0-3, power state,
+ * pin caps or PCM caps.
+ */
+STDMETHODIMP_(ULONG) HDA_Codec::DumpState(PULONG buf, ULONG maxDwords)
+{
+	if (InShutdown || afg_node == 0) return 0;
+
+	ULONG sub = hda_send_verb(afg_node, 0xF00, 0x04);
+	ULONG first = (sub >> 16) & 0xFF, count = sub & 0xFF;
+	ULONG n = 0, i;
+
+	if (maxDwords < 16 + MAX_OUTPUT_PATHS * 4) return 0;
+
+	buf[n++] = 0x44414448; // 'HDAD'
+	buf[n++] = 1;
+	buf[n++] = codec_id;
+	buf[n++] = codec_subsystem_id;
+	buf[n++] = adi_model != NULL;
+	buf[n++] = afg_node;
+	buf[n++] = first;
+	buf[n++] = count;
+	buf[n++] = out_paths.count;
+	buf[n++] = pin_output_node_number;
+	buf[n++] = headphone_node_number;
+	buf[n++] = selected_output_node;
+	buf[n++] = hda_is_headphone_connected();
+	buf[n++] = 0;
+	buf[n++] = 0;
+	buf[n++] = 0;
+
+	for (i = 0; i < MAX_OUTPUT_PATHS; ++i) {
+		HDA_NODE_PATH& path = out_paths.paths[i];
+		BOOLEAN used = i < out_paths.count;
+		buf[n++] = used ? path.path_type : 0;
+		buf[n++] = used ? path.audio_output_node_number : 0;
+		buf[n++] = used ? path.output_amp_node_number : 0;
+		buf[n++] = used ? path.mute_amp_node_number : 0;
+	}
+
+	for (ULONG node = first; node < first + count && n + 14 <= maxDwords; ++node) {
+		ULONG type = hda_get_node_type(node);
+		BOOLEAN pin = (type == HDA_WIDGET_PIN_COMPLEX);
+		BOOLEAN conv = (type == HDA_WIDGET_AUDIO_OUTPUT || type == HDA_WIDGET_AUDIO_INPUT);
+
+		buf[n++] = node | (type << 8);
+		buf[n++] = hda_send_verb(node, 0xF00, 0x09);
+		buf[n++] = pin ? hda_send_verb(node, 0xF1C, 0) : conv ? hda_send_verb(node, 0xA00, 0) : 0;
+		buf[n++] = pin ? hda_send_verb(node, 0xF07, 0) : conv ? hda_send_verb(node, 0xF06, 0) : 0;
+		buf[n++] = pin ? hda_send_verb(node, 0xF0C, 0) : 0;
+		buf[n++] = pin ? hda_send_verb(node, 0xF09, 0) : 0;
+		buf[n++] = hda_send_verb(node, 0xB00, 0xA000);
+		buf[n++] = hda_send_verb(node, 0xB00, 0x8000);
+		buf[n++] = hda_send_verb(node, 0xB00, 0x2000);
+		buf[n++] = hda_send_verb(node, 0xB00, 0x0000);
+		buf[n++] = hda_send_verb(node, 0xF01, 0);
+		buf[n++] = hda_send_verb(node, 0xF02, 0);
+		buf[n++] = hda_send_verb(node, 0xF05, 0);
+		buf[n++] = pin ? hda_send_verb(node, 0xF00, 0x0C) : conv ? hda_send_verb(node, 0xF00, 0x0A) : 0;
+	}
+	return n;
+}
+
+// Raw codec commands: bits 27:20 node, 19:0 verb and payload. The address
+// bits are replaced with this codec's address.
+void HDA_Codec::SendVerbList(const ULONG* verbs, ULONG count, const char* tag)
+{
+	for (ULONG i = 0; i < count; ++i) {
+		ULONG v = verbs[i];
+		SendVerbLogged((v >> 20) & 0xFF, (v >> 8) & 0xFFF, v & 0xFF, tag);
+	}
+}
+
+// Undo pin configuration changes before the driver unloads
+// (the XP driver sends RemVerbs from its codec destructor).
+STDMETHODIMP_(void) HDA_Codec::RestoreVendorDefaults(void)
+{
+	if (InShutdown) return;
+
+	if (Registry::numRemVerbs != 0) {
+		SendVerbList(Registry::remVerbs, Registry::numRemVerbs, "registry RemVerbs");
+	} else if (adi_model != NULL && adi_model->num_rem_verbs != 0) {
+		SendVerbList(adi_model->rem_verbs, adi_model->num_rem_verbs, "RemVerbs");
+	}
 }
 

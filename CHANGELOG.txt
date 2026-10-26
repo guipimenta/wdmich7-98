@@ -1,3 +1,14 @@
+# wdmich7-98 1.0 (WDMHDA 5.00.2195.26) 2026-10-27
+- SoundMAX ThinkPad support (AD1981HD, AD1984, AD1984A) using the init and
+  restore verbs, converter limit and EAPD pin of the Analog Devices XP driver
+- output path walk follows the connection that reaches a DAC; ADI mixer
+  inputs on that path are unmuted at 0 dB (fixes silent internal speaker)
+- headphone insertion only switches the speaker off where the XP driver does
+- InitVerbs/RemVerbs registry override in the XP INF format
+- codec state snapshots in the registry (StateInit, StateStream)
+- INF: one entry per Intel ICH7/ICH8/ICH9 controller, generic entry renamed
+- inline assembly moved to cpu.h; XP DDK build with build.cmd
+
 # WDMHDA 0.25 2026-10-24
 - fixed higher sample rate support better
 - fixed installation freeze bug
